@@ -1,0 +1,124 @@
+import tensorflow as tf
+import os
+import numpy as np
+from matplotlib import pyplot as plt
+from tensorflow.keras.layers import Conv2D, BatchNormalization, \
+    Activation, MaxPool2D, Dropout, Flatten, Dense
+from tensorflow.keras import Model
+import gzip
+import random
+
+# 训练数据和标签：
+with gzip.open('train-images-idx3-ubyte.gz') as bytestream:
+    bytestream.read(16) #每个像素存储在文件中的大小为16bits
+    buf = bytestream.read(28 * 28 * 60000 * 1)
+    data = np.frombuffer(buf, dtype=np.uint8).astype(np.float32) 
+    #像素值[0, 255]被调整到[-0.5, 0.5]
+    data = (data - (255 / 2.0)) / 255
+    #调整为4维张量[image index, y, x, channels]
+    x_train = data.reshape(60000, 28, 28, 1)
+with gzip.open('train-labels-idx1-ubyte.gz') as bytestream:
+    bytestream.read(8) #每个标签存储在文件中的大小为8bits
+    buf = bytestream.read(1 * 60000)
+    y_train = np.frombuffer(buf, dtype=np.uint8).astype(np.int64)
+# 测试数据和标签：
+with gzip.open('t10k-images-idx3-ubyte.gz') as bytestream:
+    bytestream.read(16) #每个像素存储在文件中的大小为16bits
+    buf = bytestream.read(28 * 28 * 10000 * 1)
+    data_test = np.frombuffer(buf, dtype=np.uint8).astype(np.float32) 
+    #像素值[0, 255]被调整到[-0.5, 0.5]
+    data_test = (data_test - (255 / 2.0)) / 255
+    #调整为4维张量[image index, y, x, channels]
+    x_test = data_test.reshape(10000, 28, 28, 1)
+with gzip.open('t10k-labels-idx1-ubyte.gz') as bytestream:
+    bytestream.read(8) #每个标签存储在文件中的大小为8bits
+    buf = bytestream.read(1 * 10000)
+    y_test = np.frombuffer(buf, dtype=np.uint8).astype(np.int64)
+ 
+# 神经网络构建
+class ConvMnist(Model):
+    def __init__(self):
+        super(ConvMnist, self).__init__()
+        # 卷积层c1，激活函数a1，池化层p1
+        self.c1 = Conv2D(filters=32, kernel_size=(5, 5), padding='same')
+        self.a1 = Activation('relu')
+        self.p1 = MaxPool2D(pool_size=(2, 2), strides=2, padding='same')
+        
+        # 卷积层c2，激活函数a2，池化层p2
+        self.c2 = Conv2D(filters=64, kernel_size=(5, 5), padding='same')
+        self.a2 = Activation('relu')
+        self.p2 = MaxPool2D(pool_size=(2, 2), strides=2, padding='same')
+        
+        # 扁平化 
+        self.flatten = Flatten()
+        
+        # 全连接层f1与f2
+        self.f1 = Dense(512, activation='relu')
+        # 丢弃数据，防止过拟合
+        self.d1 = Dropout(0.2)
+        self.f2 = Dense(10, activation='softmax')
+
+    def call(self, x):
+        x = self.c1(x)
+        x = self.a1(x)
+        x = self.p1(x)
+        
+        x = self.c2(x)
+        x = self.a2(x)
+        x = self.p2(x)
+        
+        x = self.flatten(x)
+        
+        x = self.f1(x)
+        x = self.d1(x)
+        y = self.f2(x)
+        return y
+
+model = ConvMnist()
+model.compile(optimizer='adam',
+              # CNN输出的是经过softmax处理的概率分布，所以损失函数内是False
+              # logits就是没有经过sigmoid激活函数的fully connect的输出
+              # SparseCategoricalCrossentropy:标签没有经过one-hot编码，多标签
+              loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+              # y是数值，CNN输出的是独热码（概率分布）
+              metrics=['sparse_categorical_accuracy'])
+
+# tf.keras.callbacks.ModelCheckpoint断点续训，在每个训练期（epoch）之后保存模型。
+# ModelCheckpoint回调与使用model.fit（）进行的训练结合使用，可以以一定间隔保存模型或权重
+#   （在检查点文件中），因此可以稍后加载模型或权重以从保存的状态继续训练。
+# 则通过model.load_weights（）函数将之前得到的参数传入模型中
+checkpoint_save_path = './checkpoint/mnist.ckpt'
+if os.path.exists(checkpoint_save_path + '.index'):
+    print('-------------load the model---------------')
+    model.load_weights(checkpoint_save_path)
+# cp_callback用于每个训练期（epoch）之后保存模型参数
+cp_callback = tf.keras.callbacks.ModelCheckpoint(
+    filepath=checkpoint_save_path,
+    # 仅保存模型的权重，被监测数量的最佳型号不会被覆盖
+    save_weights_only=True, save_best_only=True)
+
+
+# 模型训练
+history = model.fit(x_train, y_train, batch_size=32, epochs=5,
+                    validation_data=(x_test, y_test),
+                    validation_freq=1,  # 每经过1个epoch就进行1次验证
+                    callbacks=[cp_callback])
+model.summary()  # 打印网络的结构和参数设计
+
+
+acc = history.history['sparse_categorical_accuracy']
+val_acc = history.history['val_sparse_categorical_accuracy']
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+plt.plot(acc, label='Train Accuracy')
+plt.plot(val_acc, label='Test Accuracy')
+plt.xlim(0,4)
+plt.ylim(0.95,1)
+plt.legend()
+plt.show()
+plt.plot(loss, label='Train Loss')
+plt.plot(val_loss, label='Test Loss')
+plt.xlim(0,4)
+plt.ylim(0,0.12)
+plt.legend()
+plt.show()
