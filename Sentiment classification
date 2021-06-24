@@ -1,0 +1,125 @@
+import gensim
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.layers import Dropout, Dense, LSTM, Embedding,Bidirectional,TimeDistributed
+from tensorflow.python.keras.preprocessing.sequence import pad_sequences
+import matplotlib.pyplot as plt
+import os
+
+# 设置分类类别以及类别对应词典word2id：{pos:0, neg:1};
+# 构建词汇表并存储，形如{word: id};
+word2id = {'_PAD_': 0}
+path = ['./Dataset/train.txt', './Dataset/validation.txt']
+# 读取不重复的词构建词典
+for _path in path:
+    with open(_path, encoding='utf-8') as f:
+        for line in f.readlines():
+            sp = line.strip().split()
+            for word in sp[1:]:
+                if word not in word2id.keys():
+                    word2id[word] = len(word2id)
+
+# 基于预训练好的word2vec构建训练语料中所含词语的word2vec;
+n_words = max(word2id.values()) + 1
+model = gensim.models.KeyedVectors.load_word2vec_format('./Dataset/wiki_word2vec_50.bin', binary=True)
+word_vecs = np.array(np.random.uniform(-1., 1., [n_words, model.vector_size]))
+for word in word2id.keys():
+    try:
+        word_vecs[word2id[word]] = model[word]
+    except KeyError:
+        pass
+
+# 将训练集、验证集和测试集处理为75个单词的句子，
+# x: [1434, 5454, 2323, ..., 0, 0, 0]，y: [0, 1]
+# x为构成一条评论的词所对应的分类id。 y为onehot编码: pos-[1, 0], neg-[0, 1]
+x_train=[];y_train=[];x_validation=[];y_validation=[];x_test=[];y_test=[]
+
+with open('./Dataset/train.txt', encoding='utf-8') as f:
+    for line in f.readlines():
+        sp = line.strip().split()
+        y_train.append(int(sp[0]))
+        length=76 if 76<len(sp) else len(sp)
+        x_line=[]
+        for i in range(1,length):
+            x_line.append(word2id[sp[i]])
+        x_train.append(np.array(x_line))
+with open('./Dataset/validation.txt', encoding='utf-8') as f:
+    for line in f.readlines():
+        sp = line.strip().split()
+        y_validation.append(int(sp[0]))
+        length=76 if 76<len(sp) else len(sp)
+        x_line=[]
+        for i in range(1,length):
+            x_line.append(word2id[sp[i]])
+        x_validation.append(np.array(x_line))
+with open('./Dataset/test.txt', encoding='utf-8') as f:
+    for line in f.readlines():
+        sp = line.strip().split()
+        y_test.append(int(sp[0]))
+        length=76 if 76<len(sp) else len(sp)
+        x_line=[]
+        for i in range(1,length):
+            if sp[i] in word2id:
+                x_line.append(word2id[sp[i]])
+        x_test.append(np.array(x_line))
+
+x_train = pad_sequences(x_train, maxlen=75,value =0, padding='post')
+x_validation = pad_sequences(x_validation, maxlen=75,value =0, padding='post')
+x_test = pad_sequences(x_test, maxlen=75,value =0, padding='post')
+y_train = np.array(y_train)
+y_validation = np.array(y_validation)
+y_test = np.array(y_test)
+
+# 循环网络构建
+model = tf.keras.Sequential([
+    Embedding(58954,50,input_length=75,weights=[word_vecs]),
+    Bidirectional(LSTM(64)),
+    Dense(2, activation='softmax')
+])
+
+# 循环网络优化器和损失函数
+model.compile(optimizer=tf.keras.optimizers.Adam(0.01),
+              # 输出的是经过softmax处理的概率分布，所以损失函数内是False
+              # logits就是没有经过sigmoid激活函数的fully connect的输出
+              # SparseCategoricalCrossentropy:标签没有经过one-hot编码，多标签
+              loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+              metrics=['sparse_categorical_accuracy'])
+
+# tf.keras.callbacks.ModelCheckpoint断点续训，在每个训练期（epoch）之后保存模型。
+# ModelCheckpoint回调与使用model.fit（）进行的训练结合使用，可以以一定间隔保存模型或权重
+#   （在检查点文件中），因此可以稍后加载模型或权重以从保存的状态继续训练。
+# 则通过model.load_weights（）函数将之前得到的参数传入模型中
+checkpoint_save_path = "./checkpoint/shiyan4_lstm.ckpt"
+if os.path.exists(checkpoint_save_path + '.index'):
+    print('-------------load the model-----------------')
+    model.load_weights(checkpoint_save_path)
+# cp_callback用于每个训练期（epoch）之后保存模型参数
+cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_save_path,
+                                                 save_weights_only=True,
+                                                 save_best_only=True,
+                                                 monitor='val_loss')
+# 模型训练
+history = model.fit(x_train, y_train, batch_size=32, epochs=5, validation_data=(x_validation, y_validation), validation_freq=1,
+                    callbacks=[cp_callback])
+
+model.summary()# 打印网络的结构和参数设计
+
+# 显示训练集和验证集的acc和loss曲线
+acc = history.history['sparse_categorical_accuracy']
+val_acc = history.history['val_sparse_categorical_accuracy']
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+plt.plot(acc, label='Train Accuracy')
+plt.plot(val_acc, label='Test Accuracy')
+plt.xlim(0,4)
+plt.ylim(0.61,0.63)
+plt.legend()
+plt.show()
+plt.plot(loss, label='Train Loss')
+plt.plot(val_loss, label='Test Loss')
+plt.xlim(0,4)
+plt.ylim(2.7,3.0)
+plt.legend()
+plt.show()
+
+model.evaluate(x_test,y_test)
